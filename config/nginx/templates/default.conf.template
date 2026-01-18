@@ -1,0 +1,72 @@
+## Rate limiting (included within http context via conf.d)
+## Define a zone keyed by client IP and a request rate.
+limit_req_zone $binary_remote_addr zone=${RATE_LIMIT_ZONE_NAME}:${RATE_LIMIT_ZONE_SIZE} rate=${RATE_LIMIT_RATE};
+
+server {
+    listen       80;
+    listen  [::]:80;
+    server_name  localhost;
+
+    # Timeouts and sizes (from ENV)
+    client_max_body_size  ${CLIENT_MAX_BODY_SIZE};
+    keepalive_timeout     ${KEEPALIVE_TIMEOUT};
+    send_timeout          ${SEND_TIMEOUT};
+    client_body_timeout   ${CLIENT_BODY_TIMEOUT};
+    client_header_timeout ${CLIENT_HEADER_TIMEOUT};
+
+    # Proxy timeouts (safe defaults; effective if proxying)
+    proxy_connect_timeout ${PROXY_CONNECT_TIMEOUT};
+    proxy_read_timeout    ${PROXY_READ_TIMEOUT};
+    proxy_send_timeout    ${PROXY_SEND_TIMEOUT};
+
+    #access_log  /var/log/nginx/host.access.log  main;
+
+    location / {
+        # enable ModSecurity for this location
+        modsecurity on;
+        # set env `MODSECURITY_ENGINE` (On|DetectionOnly)
+        modsecurity_rules '
+            Include /etc/nginx/modsec/main.conf
+            SecRuleEngine ${MODSECURITY_ENGINE}
+        ';
+
+        # per-IP rate limiting
+        limit_req zone=${RATE_LIMIT_ZONE_NAME} burst=${RATE_LIMIT_BURST} nodelay;
+        limit_req_status ${RATE_LIMIT_STATUS};
+
+        root   /usr/share/nginx/html;
+        index  index.html index.htm;
+    }
+
+    #error_page  404              /404.html;
+
+    # redirect server error pages to the static page /50x.html
+    #
+    error_page   500 502 503 504  /50x.html;
+    location = /50x.html {
+        root   /usr/share/nginx/html;
+    }
+
+    # proxy the PHP scripts to Apache listening on 127.0.0.1:80
+    #
+    #location ~ \.php$ {
+    #    proxy_pass   http://127.0.0.1;
+    #}
+
+    # pass the PHP scripts to FastCGI server listening on 127.0.0.1:9000
+    #
+    #location ~ \.php$ {
+    #    root           html;
+    #    fastcgi_pass   127.0.0.1:9000;
+    #    fastcgi_index  index.php;
+    #    fastcgi_param  SCRIPT_FILENAME  /scripts$fastcgi_script_name;
+    #    include        fastcgi_params;
+    #}
+
+    # deny access to .htaccess files, if Apache's document root
+    # concurs with nginx's one
+    #
+    #location ~ /\.ht {
+    #    deny  all;
+    #}
+}

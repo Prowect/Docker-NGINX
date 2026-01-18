@@ -1,0 +1,28 @@
+version: '3.8'
+
+services:
+    nginx:
+        build: .
+        # environment:
+            # MODSECURITY_ENGINE: DetectionOnly
+            # MODSEC_AUDIT_RETENTION_DAYS: 30
+            # MODSEC_AUDIT_MAX_SIZE_MB: 0
+            # MODSEC_AUDIT_MAX_SIZE_GB: 1
+            # RATE_LIMIT_ZONE_NAME: perip
+            # RATE_LIMIT_ZONE_SIZE: 10m
+            # RATE_LIMIT_RATE: 10r/s
+            # RATE_LIMIT_BURST: 20
+            # RATE_LIMIT_STATUS: 429
+            # CLIENT_MAX_BODY_SIZE: 10m
+            # KEEPALIVE_TIMEOUT: 65
+            # CLIENT_BODY_TIMEOUT: 60
+            # CLIENT_HEADER_TIMEOUT: 60
+            # SEND_TIMEOUT: 60
+            # PROXY_CONNECT_TIMEOUT: 5
+            # PROXY_READ_TIMEOUT: 60
+            # PROXY_SEND_TIMEOUT: 60
+        ports:
+            - "8080:80"
+        volumes:
+            - ./data/logs/modsecurity/audit:/var/log/modsecurity/audit
+            - ./data/cache:/var/cache/nginx
