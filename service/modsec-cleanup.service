@@ -15,10 +15,10 @@ printf "[modsec-cleanup] starting; retention=%s days; max_size_mb=%s; target=%s\
 
 while true; do
     if [ -d "$TARGET_DIR" ]; then
-        # 1) Time-based cleanup: delete items older than RETENTION_DAYS
-        find "$TARGET_DIR" -mindepth 1 -mtime +"$RETENTION_DAYS" -print -exec rm -rf {} +
-        # Remove now-empty directories (best-effort)
-        find "$TARGET_DIR" -type d -empty -print -exec rmdir {} + || true
+        # 1) Time-based cleanup: delete files older than RETENTION_DAYS
+        find "$TARGET_DIR" -mindepth 1 -type f -mtime +"$RETENTION_DAYS" -print -exec rm -f {} +
+        # Remove now-empty subdirectories, but keep TARGET_DIR itself
+        find "$TARGET_DIR" -mindepth 1 -depth -type d -empty -print -exec rmdir {} \; || true
 
         # 2) Size-based cleanup: prune oldest entries until under MAX_SIZE_MB
         if [ "${MAX_SIZE_MB}" -gt 0 ]; then

@@ -1,4 +1,8 @@
-FROM nginx:1.29.4-alpine
+FROM nginx:1.31.3-alpine
+
+ARG MODSECURITY_VERSION=v3.0.16
+ARG MODSECURITY_NGINX_VERSION=v1.0.4
+ARG OWASP_CRS_VERSION=v4.28.0
 
 LABEL org.opencontainers.image.title="Docker NGINX by Prowect"
 LABEL org.opencontainers.image.description="Docker image for preconfigured NGINX"
@@ -70,18 +74,18 @@ RUN set -eux; \
             wget \
             tar; \
         # Build libModSecurity (v3)
-        git clone --depth 1 https://github.com/SpiderLabs/ModSecurity /tmp/ModSecurity; \
+        git clone --depth 1 --branch "${MODSECURITY_VERSION}" https://github.com/owasp-modsecurity/ModSecurity /tmp/ModSecurity; \
         cd /tmp/ModSecurity; \
-        git submodule init; git submodule update; \
+        git submodule update --init --recursive; \
         ./build.sh; \
         ./configure; \
         make -j"$(getconf _NPROCESSORS_ONLN)"; \
         make install; \
         ldconfig || true; \
         # Build NGINX ModSecurity connector as dynamic module matching the bundled NGINX version
-        git clone --depth 1 https://github.com/SpiderLabs/ModSecurity-nginx /tmp/ModSecurity-nginx; \
+        git clone --depth 1 --branch "${MODSECURITY_NGINX_VERSION}" https://github.com/owasp-modsecurity/ModSecurity-nginx /tmp/ModSecurity-nginx; \
         NGINX_VER="$(nginx -v 2>&1 | awk -F/ '{print $2}')"; \
-        wget -O /tmp/nginx.tar.gz "http://nginx.org/download/nginx-${NGINX_VER}.tar.gz"; \
+        wget -O /tmp/nginx.tar.gz "https://nginx.org/download/nginx-${NGINX_VER}.tar.gz"; \
         mkdir -p /tmp/ngsrc; \
         tar -xzf /tmp/nginx.tar.gz -C /tmp/ngsrc; \
         cd /tmp/ngsrc/nginx-*; \
@@ -91,12 +95,12 @@ RUN set -eux; \
         cp objs/ngx_http_modsecurity_module.so /usr/lib/nginx/modules/; \
         # Create ModSecurity directory structure and fetch OWASP CRS
         mkdir -p /etc/nginx/modsec; \
-        git clone --depth 1 https://github.com/coreruleset/coreruleset /etc/nginx/modsec/coreruleset; \
+        git clone --depth 1 --branch "${OWASP_CRS_VERSION}" https://github.com/coreruleset/coreruleset /etc/nginx/modsec/coreruleset; \
         cp /etc/nginx/modsec/coreruleset/crs-setup.conf.example /etc/nginx/modsec/coreruleset/crs-setup.conf; \
         # Get a recommended ModSecurity v3 base config and turn engine ON
-        curl -sSL https://raw.githubusercontent.com/SpiderLabs/ModSecurity/v3/master/modsecurity.conf-recommended -o /etc/nginx/modsec/modsecurity.conf; \
+        curl -sSL "https://raw.githubusercontent.com/owasp-modsecurity/ModSecurity/${MODSECURITY_VERSION}/modsecurity.conf-recommended" -o /etc/nginx/modsec/modsecurity.conf; \
         # Fetch unicode.mapping required by SecUnicodeMapFile and set absolute path
-            curl -sSL https://raw.githubusercontent.com/SpiderLabs/ModSecurity/v3/master/unicode.mapping -o /etc/nginx/modsec/unicode.mapping; \
+            curl -sSL "https://raw.githubusercontent.com/owasp-modsecurity/ModSecurity/${MODSECURITY_VERSION}/unicode.mapping" -o /etc/nginx/modsec/unicode.mapping; \
             sed -i 's|^[[:space:]]*SecUnicodeMapFile[[:space:]].*|SecUnicodeMapFile /etc/nginx/modsec/unicode.mapping 20127|' /etc/nginx/modsec/modsecurity.conf; \
         # Ensure WAF blocks (not just detects)
         sed -i 's/^SecRuleEngine.*/SecRuleEngine On/' /etc/nginx/modsec/modsecurity.conf; \
