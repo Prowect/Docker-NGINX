@@ -1,175 +1,171 @@
 # Docker NGINX with ModSecurity WAF
 
-An Alpine-based NGINX image preconfigured with ModSecurity v3 (OWASP Core Rule Set), sane defaults for rate limiting and timeouts, and a built-in background service that keeps ModSecurity audit logs tidy. The image uses the official NGINX Docker entrypoint to render configuration from environment-aware templates, so you can tune behavior with environment variables—no manual config editing required.
+Production-hardened, Alpine-based NGINX image with ModSecurity v3 and the OWASP Core Rule Set (CRS). The image runs as an unprivileged user, supports a read-only root filesystem, validates runtime configuration and shuts down gracefully.
 
-## Features
-- ModSecurity v3 compiled and enabled, including OWASP CRS (blocking by default)
-- Rate limiting per client IP via `limit_req`
-- Environment-driven timeouts and request size limits
-- Runit-managed services: NGINX and audit log cleanup
-- Persistent audit logs under `/var/log/modsecurity/audit` (volume-ready)
-- Configuration templating via `/etc/nginx/templates/*.template`
+## Included versions
 
-## How it works
-- At container start, the official NGINX entrypoint processes templates in `/etc/nginx/templates/` (like `default.conf.template`) and writes rendered configs to `/etc/nginx/conf.d/` using environment variables.
-- ModSecurity is loaded as a dynamic NGINX module and configured through `/etc/nginx/modsec/main.conf`.
-- The cleanup service prunes old or excess ModSecurity audit records based on retention days and an optional size cap.
+- NGINX 1.31.3
+- ModSecurity 3.0.16
+- ModSecurity-nginx 1.0.4
+- OWASP CRS 4.28.0
 
-## Quick Start
+All source archives are verified with SHA-256 during the build. The NGINX base image is pinned to an immutable multi-architecture digest.
+
+## Quick start
 
 ```bash
 docker build -t nginx-waf .
-docker run --rm -p 8080:80 \
-	-v $(pwd)/data/logs/modsecurity/audit:/var/log/modsecurity/audit \
-	--name nginx-waf nginx-waf
+docker run --rm -p 8080:80 nginx-waf
 ```
 
-Open http://localhost:8080 to view the default site.
+Open <http://localhost:8080>. The health endpoint is available at <http://localhost:8080/healthz>.
 
-## Configuration via Environment Variables
+The container remains compatible with the established internal port `80` and runs as UID/GID `101` (`nginx`). Docker normally permits unprivileged low ports inside containers; the hardened Compose configuration makes this explicit with the namespaced `net.ipv4.ip_unprivileged_port_start=0` sysctl.
 
-The following environment variables influence runtime behavior. Unless stated otherwise, all are read and applied during startup by the template system.
+## Security model
 
-| Environment variable          | Default value | Possible values               | Description |
-|-------------------------------|---------------|-------------------------------|-------------|
-| `MODSECURITY_ENGINE`          | `On`          | `On`, `DetectionOnly`, `Off`  | ModSecurity rule engine mode. `On` blocks; `DetectionOnly` logs without blocking; `Off` disables WAF. |
-| `MODSEC_AUDIT_RETENTION_DAYS` | `30`          | integer ≥ 0                   | Days to keep per-request audit entries under `/var/log/modsecurity/audit/storage`. |
-| `MODSEC_AUDIT_MAX_SIZE_MB`    | `0`           | integer ≥ 0                   | Max size (MB) for audit storage; `0` disables MB cap. If `0` and `MODSEC_AUDIT_MAX_SIZE_GB` > 0, GB is converted to MB. |
-| `MODSEC_AUDIT_MAX_SIZE_GB`    | `1`           | integer ≥ 0                   | Alternative cap (GB). Used only if `MODSEC_AUDIT_MAX_SIZE_MB` is `0`. Default effectively enforces ~1GB cap. |
-| `RATE_LIMIT_ZONE_NAME`        | `perip`       | string                        | Name of the `limit_req` zone keyed by client IP. |
-| `RATE_LIMIT_ZONE_SIZE`        | `10m`         | NGINX shared memory size      | Size of the rate limit zone (e.g., `10m`). |
-| `RATE_LIMIT_RATE`             | `10r/s`       | NGINX rate format             | Allowed request rate per client (e.g., `10r/s`). |
-| `RATE_LIMIT_BURST`            | `20`          | integer                       | Burst capacity before limiting is applied. |
-| `RATE_LIMIT_STATUS`           | `429`         | valid HTTP status code        | Status code returned when rate limit is triggered. |
-| `CLIENT_MAX_BODY_SIZE`        | `10m`         | NGINX size format             | Maximum allowed client request body size. |
-| `KEEPALIVE_TIMEOUT`           | `65`          | seconds                       | Keepalive timeout for client connections. |
-| `CLIENT_BODY_TIMEOUT`         | `60`          | seconds                       | Timeout for reading client request body. |
-| `CLIENT_HEADER_TIMEOUT`       | `60`          | seconds                       | Timeout for reading client request headers. |
-| `SEND_TIMEOUT`                | `60`          | seconds                       | Timeout for sending a response to the client. |
-| `PROXY_CONNECT_TIMEOUT`       | `5`           | seconds                       | Upstream proxy connect timeout (effective in proxy locations). |
-| `PROXY_READ_TIMEOUT`          | `60`          | seconds                       | Upstream proxy read timeout. |
-| `PROXY_SEND_TIMEOUT`          | `60`          | seconds                       | Upstream proxy send timeout. |
+- Unprivileged runtime user
+- Read-only-root-filesystem compatible
+- No effective Linux capabilities in the hardened Compose deployment
+- Built-in healthcheck
+- Graceful NGINX shutdown through PID 1 signal forwarding
+- Minimal multi-stage runtime image without compilers, Git, editors or source trees
+- Request-body and CRS limits with validated environment variables
+- Audit logs exclude request and response bodies by default (`ABFHZ`)
+- Application-specific CRS exclusion files are supported
 
+TLS should normally terminate at a trusted ingress, load balancer or reverse proxy. When exposing this container directly, mount a dedicated TLS server configuration and certificates instead.
 
-## Volumes and Persistence
-- Audit logs: mount a host directory to `/var/log/modsecurity/audit` to persist per-request JSON audit files.
-- Cache (optional): mount a host directory to `/var/cache/nginx` if you rely on NGINX caching.
+## Configuration
 
-## Example docker-compose (Development)
+| Environment variable | Default | Description |
+|---|---:|---|
+| `NGINX_PORT` | `80` | Listen port, between 1 and 65535 |
+| `MODSECURITY_ENGINE` | `On` | `On`, `DetectionOnly` or `Off` |
+| `MODSEC_AUDIT_LOG_PARTS` | `ABFHZ` | Uppercase ModSecurity audit parts |
+| `MODSEC_AUDIT_RETENTION_DAYS` | `30` | Audit file retention |
+| `MODSEC_AUDIT_MAX_SIZE_MB` | `0` | Audit storage limit in MB; `0` uses the GB value |
+| `MODSEC_AUDIT_MAX_SIZE_GB` | `1` | Audit storage limit in GB |
+| `MODSEC_AUDIT_CLEANUP_INTERVAL_SECONDS` | `86400` | Cleanup interval; defaults to once per day |
+| `MODSEC_REQUEST_BODY_LIMIT` | `10485760` | Maximum buffered request body in bytes |
+| `MODSEC_REQUEST_BODY_NO_FILES_LIMIT` | `1048576` | Maximum non-file request body in bytes |
+| `CRS_BLOCKING_PARANOIA_LEVEL` | `1` | Blocking paranoia level, 1–4 |
+| `CRS_DETECTION_PARANOIA_LEVEL` | `1` | Detection paranoia level, 1–4 and not below blocking level |
+| `CRS_INBOUND_ANOMALY_THRESHOLD` | `5` | Inbound blocking threshold |
+| `CRS_OUTBOUND_ANOMALY_THRESHOLD` | `4` | Outbound blocking threshold |
+| `TRUSTED_PROXY_CIDRS` | empty | Space-separated trusted proxy CIDRs |
+| `REAL_IP_HEADER` | `X-Forwarded-For` | `X-Forwarded-For` or `X-Real-IP` |
+| `REAL_IP_RECURSIVE` | `on` | Recursive trusted-proxy evaluation |
+| `RATE_LIMIT_ZONE_NAME` | `perip` | Rate-limit zone name |
+| `RATE_LIMIT_ZONE_SIZE` | `10m` | Rate-limit shared-memory size |
+| `RATE_LIMIT_RATE` | `10r/s` | Requests per second or minute |
+| `RATE_LIMIT_BURST` | `20` | Allowed burst |
+| `RATE_LIMIT_STATUS` | `429` | Rate-limit response status |
+| `CLIENT_MAX_BODY_SIZE` | `10m` | NGINX client request limit |
+| `KEEPALIVE_TIMEOUT` | `65` | Keepalive timeout in seconds |
+| `CLIENT_BODY_TIMEOUT` | `60` | Client body timeout in seconds |
+| `CLIENT_HEADER_TIMEOUT` | `60` | Client header timeout in seconds |
+| `SEND_TIMEOUT` | `60` | Response send timeout in seconds |
+| `PROXY_CONNECT_TIMEOUT` | `5` | Upstream connect timeout in seconds |
+| `PROXY_READ_TIMEOUT` | `60` | Upstream read timeout in seconds |
+| `PROXY_SEND_TIMEOUT` | `60` | Upstream send timeout in seconds |
+
+Invalid values fail fast before NGINX starts.
+
+## Reverse proxies and rate limiting
+
+Without `TRUSTED_PROXY_CIDRS`, rate limiting uses the direct peer address. Behind a proxy, explicitly trust only the proxy network:
 
 ```yaml
-version: '3.8'
-
-services:
-	nginx:
-		image: prowect/nginx
-		environment:
-			MODSECURITY_ENGINE: DetectionOnly
-			RATE_LIMIT_RATE: 10r/s
-			RATE_LIMIT_BURST: 20
-			CLIENT_MAX_BODY_SIZE: 10m
-		ports:
-			- "8080:80"
-		volumes:
-			- ./www:/usr/share/nginx/html
-			- ./data/logs/modsecurity/audit:/var/log/modsecurity/audit
-			- ./data/cache:/var/cache/nginx
+environment:
+  TRUSTED_PROXY_CIDRS: "10.0.0.0/8 192.168.0.0/16"
+  REAL_IP_HEADER: X-Forwarded-For
+  REAL_IP_RECURSIVE: "on"
 ```
 
-## Example docker-compose (Production)
+Never trust arbitrary client-provided forwarding headers or `0.0.0.0/0`.
+
+## WAF rollout and tuning
+
+For a new application, first run with `MODSECURITY_ENGINE=DetectionOnly`, review false positives and add narrow exclusions. Then enable blocking with `MODSECURITY_ENGINE=On`.
+
+Custom exclusions are loaded from:
+
+- `/etc/nginx/modsec/custom/*-before.conf` before CRS rules
+- `/etc/nginx/modsec/custom/*-after.conf` after CRS rules
+
+Two documented placeholder files are included under `config/modsecurity/`. Keep custom rule IDs in the application-owned range and test every exclusion.
+
+## Audit logs and privacy
+
+Audit logs are stored under `/var/log/modsecurity/audit`. The default `ABFHZ` parts intentionally omit request and response bodies. Headers and rule messages may still contain sensitive values; restrict filesystem access, encrypt persistent storage and forward only the minimum required data.
+
+When using Linux bind mounts, ensure UID/GID `101` can write the audit and cache directories:
+
+```bash
+sudo chown -R 101:101 data/logs/modsecurity/audit data/cache
+```
+
+## Hardened Compose deployment
+
+The included `docker-compose.yml` enables:
+
+- Read-only root filesystem
+- All Linux capabilities dropped
+- Explicit unprivileged-port sysctl for the compatible internal port 80
+- `no-new-privileges`
+- Writable `/tmp` tmpfs
+- Healthcheck and graceful stop period
+- CPU, memory and PID limits
+
+For production, deploy an immutable image digest instead of building locally:
 
 ```yaml
-version: '3.8'
-
-services:
-	nginx:
-		image: prowect/nginx
-		restart: unless-stopped
-		environment:
-			MODSECURITY_ENGINE: On
-			RATE_LIMIT_RATE: 10r/s
-			RATE_LIMIT_BURST: 20
-			RATE_LIMIT_STATUS: 429
-			CLIENT_MAX_BODY_SIZE: 10m
-			MODSEC_AUDIT_RETENTION_DAYS: 30
-			MODSEC_AUDIT_MAX_SIZE_GB: 1
-		ports:
-			- "80:80"
-		volumes:
-			- ./data/logs/modsecurity/audit:/var/log/modsecurity/audit
-			- ./data/cache:/var/cache/nginx
+image: prowect/nginx@sha256:<published-digest>
 ```
 
-## Customizing NGINX
-- Add or modify templates under `/etc/nginx/templates/` (in this repo: `config/nginx/templates/`). They are rendered on startup with environment substitutions.
-- For advanced setups (proxying, upstreams, HTTPS), create new template files with appropriate `server` and `location` blocks.
+Adjust resource limits based on load tests. ModSecurity memory usage depends strongly on concurrency, body sizes and enabled CRS paranoia levels.
 
-## ModSecurity exceptions in templates
-You can define exceptions per path (location) directly inside a template using `modsecurity_rules`. Below are common patterns:
+## Custom NGINX configuration
 
-1) Disable WAF for a specific endpoint (e.g., health checks)
+Templates in `/etc/nginx/templates/*.template` are rendered at startup into `/tmp/nginx-runtime/conf.d`. Additional static `.conf` files can be mounted read-only under `/etc/nginx/conf.d`.
 
-```nginx
-server {
-	listen 80;
-	server_name localhost;
+Existing mounted `conf.d` files and templates that listen on port `80` remain supported. Configuration and certificate files must be readable by UID/GID `101`. A complete replacement of `nginx.conf` must keep PID, cache and temporary paths writable for the non-root user; `/tmp` and `/var/cache/nginx` are prepared for this purpose.
 
-	location /health {
-		# Turn off ModSecurity for this path
-		modsecurity off;
-		return 200 "OK\n";
-	}
-}
+The built-in `/healthz` endpoint bypasses WAF, access logging and rate limiting. Keep it limited to internal health probes at the network layer.
+
+## Build and tests
+
+```bash
+docker compose build --pull nginx
+./run-tests.sh docker-nginx-nginx
 ```
 
-2) Remove specific CRS rule IDs for one route
+The integration test covers:
 
-```nginx
-server {
-	listen 80;
-	server_name localhost;
+- Non-root and image-size guardrails
+- Read-only runtime with all capabilities dropped
+- Healthcheck and normal HTTP traffic
+- CRS blocking of an XSS payload
+- NGINX and ModSecurity request-body limits
+- Per-client rate limiting with HTTP 429
+- Trusted proxy address handling
+- Mounted legacy `conf.d` configuration on port 80
+- Age- and size-based audit cleanup with storage-root preservation
+- Graceful shutdown with exit code 0
+- Rejection of invalid runtime configuration
 
-	location /api/upload {
-		modsecurity on;
-		modsecurity_rules '
-			Include /etc/nginx/modsec/main.conf
-			SecRuleEngine ${MODSECURITY_ENGINE}
+## Release supply chain
 
-			# Example: relax protocol/body checks for uploads
-			SecRuleRemoveById 920230 920400 920420
+Pull requests and `main` builds only build, test and scan. Only version tags publish images. Published multi-architecture images include SBOM and provenance attestations and are signed keylessly with Cosign.
 
-			# Narrow a rule target (exclude arg "payload" from rule 942100)
-			SecRuleUpdateTargetById 942100 !ARGS:payload
-		';
+Verify a released digest:
 
-		# e.g., proxy to your backend
-		# proxy_pass http://backend;
-	}
-}
+```bash
+cosign verify \
+  --certificate-oidc-issuer https://token.actions.githubusercontent.com \
+  --certificate-identity-regexp '^https://github\.com/Prowect/Docker-NGINX/\.github/workflows/docker-image\.yml@refs/tags/v[0-9].*$' \
+  prowect/nginx@sha256:<published-digest>
 ```
 
-3) Whitelist a trusted IP by turning the engine off for that client
-
-```nginx
-server {
-	listen 80;
-	server_name localhost;
-
-	location / {
-		modsecurity on;
-		modsecurity_rules '
-			Include /etc/nginx/modsec/main.conf
-			SecRuleEngine ${MODSECURITY_ENGINE}
-
-			# Disable WAF for a specific IP (transaction-level)
-			SecRule REMOTE_ADDR "@ipMatch 203.0.113.10" \
-				"id:100000,phase:1,pass,ctl:ruleEngine=Off"
-		';
-
-		root /usr/share/nginx/html;
-		index index.html;
-	}
-}
-```
-
-Place such snippets in a new template file (e.g., `config/nginx/templates/custom.conf.template`). On startup, the entrypoint renders templates and includes them under `/etc/nginx/conf.d/`.
+Dependabot monitors the pinned base image and GitHub Actions. Updates to ModSecurity, its connector and CRS should retain explicit SHA-256 verification and pass the full integration suite before release.

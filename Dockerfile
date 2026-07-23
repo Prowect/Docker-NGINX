@@ -1,170 +1,189 @@
-FROM nginx:1.31.3-alpine
+# syntax=docker/dockerfile:1.7
 
+ARG NGINX_IMAGE=nginx:1.31.3-alpine-slim@sha256:45b82ed5f285b90d63df07ba70430fdd8f25624b416617d9e6dc93412b2006dc
+
+FROM ${NGINX_IMAGE} AS builder
+
+ARG NGINX_VERSION=1.31.3
+ARG NGINX_SHA256=a7657c50811c2d92d9895395e8b873ef60398142c4db21eb647811c38f6dd525
 ARG MODSECURITY_VERSION=v3.0.16
+ARG MODSECURITY_SHA256=739be3c71b1939f14e91afe1eeae654acbd440da11bd29790458840bc315b4c0
 ARG MODSECURITY_NGINX_VERSION=v1.0.4
+ARG MODSECURITY_NGINX_SHA256=6bdc7570911be884c1e43aaf85046137f9fde0cfa0dd4a55b853c81c45a13313
 ARG OWASP_CRS_VERSION=v4.28.0
+ARG OWASP_CRS_SHA256=fca67fe46adafeeee61b9d1a03f38c25b9b2a799577df03fa51d99589e6d03b9
 
-LABEL org.opencontainers.image.title="Docker NGINX by Prowect"
-LABEL org.opencontainers.image.description="Docker image for preconfigured NGINX"
-LABEL org.opencontainers.image.authors="office@prowect.com"
-LABEL org.opencontainers.image.source="https://github.com/Prowect/Docker-NGINX"
-
-# Default: enable ModSecurity WAF engine
-ENV MODSECURITY_ENGINE=On
-
-# Default retention for ModSecurity audit storage (days)
-ENV MODSEC_AUDIT_RETENTION_DAYS=30
-# Optional maximum size for ModSecurity audit storage
-ENV MODSEC_AUDIT_MAX_SIZE_MB=0
-ENV MODSEC_AUDIT_MAX_SIZE_GB=1
-
-# Default rate limit (per IP) configuration
-ENV RATE_LIMIT_ZONE_NAME=perip
-ENV RATE_LIMIT_ZONE_SIZE=10m
-ENV RATE_LIMIT_RATE=10r/s
-ENV RATE_LIMIT_BURST=20
-ENV RATE_LIMIT_STATUS=429
-
-# Defaults for NGINX timeouts and sizes (ENV-overridable)
-ENV CLIENT_MAX_BODY_SIZE=10m
-ENV KEEPALIVE_TIMEOUT=65
-ENV CLIENT_BODY_TIMEOUT=60
-ENV CLIENT_HEADER_TIMEOUT=60
-ENV SEND_TIMEOUT=60
-ENV PROXY_CONNECT_TIMEOUT=5
-ENV PROXY_READ_TIMEOUT=60
-ENV PROXY_SEND_TIMEOUT=60
-
-# Build and install ModSecurity v3 and the NGINX ModSecurity connector from source (keeps Alpine base)
 RUN set -eux; \
-        apk update; \
-        # Runtime deps
-        apk add --no-cache \
-            ca-certificates \
-            curl \
-            git \
-            pcre2 \
-            libxml2 \
-            yajl \
-            lmdb \
-            geoip \
-            libmaxminddb \
-            openssl \
-            zlib \
-            libstdc++ \
-            vim \
-            jq \
-            runit; \
-        # Build deps
-        apk add --no-cache --virtual .build-deps \
-            build-base \
-            automake \
-            autoconf \
-            libtool \
-            pkgconfig \
-            pcre2-dev \
-            libxml2-dev \
-            yajl-dev \
-            lmdb-dev \
-            geoip-dev \
-            libmaxminddb-dev \
-            openssl-dev \
-            zlib-dev \
-            linux-headers \
-            wget \
-            tar; \
-        # Build libModSecurity (v3)
-        git clone --depth 1 --branch "${MODSECURITY_VERSION}" https://github.com/owasp-modsecurity/ModSecurity /tmp/ModSecurity; \
-        cd /tmp/ModSecurity; \
-        git submodule update --init --recursive; \
-        ./build.sh; \
-        ./configure; \
-        make -j"$(getconf _NPROCESSORS_ONLN)"; \
-        make install; \
-        ldconfig || true; \
-        # Build NGINX ModSecurity connector as dynamic module matching the bundled NGINX version
-        git clone --depth 1 --branch "${MODSECURITY_NGINX_VERSION}" https://github.com/owasp-modsecurity/ModSecurity-nginx /tmp/ModSecurity-nginx; \
-        NGINX_VER="$(nginx -v 2>&1 | awk -F/ '{print $2}')"; \
-        wget -O /tmp/nginx.tar.gz "https://nginx.org/download/nginx-${NGINX_VER}.tar.gz"; \
-        mkdir -p /tmp/ngsrc; \
-        tar -xzf /tmp/nginx.tar.gz -C /tmp/ngsrc; \
-        cd /tmp/ngsrc/nginx-*; \
-        ./configure --with-compat --add-dynamic-module=/tmp/ModSecurity-nginx; \
-        make modules -j"$(getconf _NPROCESSORS_ONLN)"; \
-        mkdir -p /usr/lib/nginx/modules; \
-        cp objs/ngx_http_modsecurity_module.so /usr/lib/nginx/modules/; \
-        # Create ModSecurity directory structure and fetch OWASP CRS
-        mkdir -p /etc/nginx/modsec; \
-        git clone --depth 1 --branch "${OWASP_CRS_VERSION}" https://github.com/coreruleset/coreruleset /etc/nginx/modsec/coreruleset; \
-        cp /etc/nginx/modsec/coreruleset/crs-setup.conf.example /etc/nginx/modsec/coreruleset/crs-setup.conf; \
-        # Get a recommended ModSecurity v3 base config and turn engine ON
-        curl -sSL "https://raw.githubusercontent.com/owasp-modsecurity/ModSecurity/${MODSECURITY_VERSION}/modsecurity.conf-recommended" -o /etc/nginx/modsec/modsecurity.conf; \
-        # Fetch unicode.mapping required by SecUnicodeMapFile and set absolute path
-            curl -sSL "https://raw.githubusercontent.com/owasp-modsecurity/ModSecurity/${MODSECURITY_VERSION}/unicode.mapping" -o /etc/nginx/modsec/unicode.mapping; \
-            sed -i 's|^[[:space:]]*SecUnicodeMapFile[[:space:]].*|SecUnicodeMapFile /etc/nginx/modsec/unicode.mapping 20127|' /etc/nginx/modsec/modsecurity.conf; \
-        # Ensure WAF blocks (not just detects)
-        sed -i 's/^SecRuleEngine.*/SecRuleEngine On/' /etc/nginx/modsec/modsecurity.conf; \
-        # Log only relevant requests (those that trigger rules)
-            # Configure Audit Log in JSON and write into a directory for volume mounting
-                mkdir -p /var/log/modsecurity/audit; \
-                chown -R nginx:nginx /var/log/modsecurity; \
-                sed -i 's/^SecAuditEngine.*/SecAuditEngine RelevantOnly/' /etc/nginx/modsec/modsecurity.conf; \
-                # Use Concurrent to write one file per request
-                sed -i 's/^SecAuditLogType.*/SecAuditLogType Concurrent/' /etc/nginx/modsec/modsecurity.conf; \
-                # Index file (ModSecurity requires SecAuditLog also in Concurrent mode)
-                sed -i 's|^SecAuditLog .*|SecAuditLog /var/log/modsecurity/audit/audit.log|' /etc/nginx/modsec/modsecurity.conf; \
-                # Storage directory for per-request JSON files
-                mkdir -p /var/log/modsecurity/audit/storage; \
-                chown -R nginx:nginx /var/log/modsecurity/audit/storage; \
-                if grep -q '^SecAuditLogStorageDir' /etc/nginx/modsec/modsecurity.conf; then \
-                    sed -i 's|^SecAuditLogStorageDir.*|SecAuditLogStorageDir /var/log/modsecurity/audit/storage|' /etc/nginx/modsec/modsecurity.conf; \
-                else \
-                    echo 'SecAuditLogStorageDir /var/log/modsecurity/audit/storage' >> /etc/nginx/modsec/modsecurity.conf; \
-                fi; \
-                # Include request body (C) in audit parts
-                if grep -q '^SecAuditLogParts' /etc/nginx/modsec/modsecurity.conf; then \
-                    sed -i 's|^SecAuditLogParts.*|SecAuditLogParts ABCIJDEFHZ|' /etc/nginx/modsec/modsecurity.conf; \
-                else \
-                    echo 'SecAuditLogParts ABCIJDEFHZ' >> /etc/nginx/modsec/modsecurity.conf; \
-                fi; \
-                # Ensure ModSecurity can read request bodies
-                if grep -q '^SecRequestBodyAccess' /etc/nginx/modsec/modsecurity.conf; then \
-                    sed -i 's|^SecRequestBodyAccess.*|SecRequestBodyAccess On|' /etc/nginx/modsec/modsecurity.conf; \
-                else \
-                    echo 'SecRequestBodyAccess On' >> /etc/nginx/modsec/modsecurity.conf; \
-                fi; \
-                if grep -q '^SecAuditLogFormat' /etc/nginx/modsec/modsecurity.conf; then \
-                    sed -i 's/^SecAuditLogFormat.*/SecAuditLogFormat JSON/' /etc/nginx/modsec/modsecurity.conf; \
-                else \
-                    echo 'SecAuditLogFormat JSON' >> /etc/nginx/modsec/modsecurity.conf; \
-                fi; \
-        # Create main rules file that includes base config + CRS
-        printf "Include /etc/nginx/modsec/modsecurity.conf\nInclude /etc/nginx/modsec/coreruleset/crs-setup.conf\nInclude /etc/nginx/modsec/coreruleset/rules/*.conf\n" > /etc/nginx/modsec/main.conf; \
-        # Ensure the ModSecurity module is loaded by NGINX at startup (prepend line without sed flags pitfalls)
-        printf 'load_module /usr/lib/nginx/modules/ngx_http_modsecurity_module.so;\n' | cat - /etc/nginx/nginx.conf > /tmp/nginx.conf; \
-        mv /tmp/nginx.conf /etc/nginx/nginx.conf; \
-        # Cleanup build artifacts and deps
-        apk del .build-deps; \
-        rm -rf /var/cache/apk/* /tmp/* /root/.cache
+    apk add --no-cache \
+        build-base \
+        curl \
+        geoip-dev \
+        libmaxminddb-dev \
+        libtool \
+        libxml2-dev \
+        linux-headers \
+        lmdb-dev \
+        pcre2-dev \
+        pkgconfig \
+        tar \
+        yajl-dev \
+        zlib-dev
 
-# Copy custom NGINX configuration file
+WORKDIR /tmp/build
+
+RUN set -eux; \
+    curl -fsSLo modsecurity.tar.gz \
+        "https://github.com/owasp-modsecurity/ModSecurity/releases/download/${MODSECURITY_VERSION}/modsecurity-${MODSECURITY_VERSION}.tar.gz"; \
+    echo "${MODSECURITY_SHA256}  modsecurity.tar.gz" | sha256sum -c -; \
+    mkdir modsecurity; \
+    tar -xzf modsecurity.tar.gz -C modsecurity --strip-components=1; \
+    cd modsecurity; \
+    ./configure --disable-dependency-tracking --disable-static --with-lmdb; \
+    make -j"$(getconf _NPROCESSORS_ONLN)"; \
+    make install; \
+    cp modsecurity.conf-recommended /tmp/modsecurity.conf; \
+    cp unicode.mapping /tmp/unicode.mapping
+
+RUN set -eux; \
+    curl -fsSLo modsecurity-nginx.tar.gz \
+        "https://github.com/owasp-modsecurity/ModSecurity-nginx/releases/download/${MODSECURITY_NGINX_VERSION}/ModSecurity-nginx-${MODSECURITY_NGINX_VERSION}.tar.gz"; \
+    echo "${MODSECURITY_NGINX_SHA256}  modsecurity-nginx.tar.gz" | sha256sum -c -; \
+    mkdir modsecurity-nginx; \
+    tar -xzf modsecurity-nginx.tar.gz -C modsecurity-nginx --strip-components=1; \
+    curl -fsSLo nginx.tar.gz "https://nginx.org/download/nginx-${NGINX_VERSION}.tar.gz"; \
+    echo "${NGINX_SHA256}  nginx.tar.gz" | sha256sum -c -; \
+    mkdir nginx; \
+    tar -xzf nginx.tar.gz -C nginx --strip-components=1; \
+    cd nginx; \
+    ./configure --with-compat --add-dynamic-module=/tmp/build/modsecurity-nginx; \
+    make modules -j"$(getconf _NPROCESSORS_ONLN)"; \
+    install -D -m 0755 objs/ngx_http_modsecurity_module.so /tmp/ngx_http_modsecurity_module.so
+
+RUN set -eux; \
+    curl -fsSLo coreruleset.tar.gz \
+        "https://github.com/coreruleset/coreruleset/releases/download/${OWASP_CRS_VERSION}/coreruleset-${OWASP_CRS_VERSION#v}-minimal.tar.gz"; \
+    echo "${OWASP_CRS_SHA256}  coreruleset.tar.gz" | sha256sum -c -; \
+    mkdir /tmp/coreruleset; \
+    tar -xzf coreruleset.tar.gz -C /tmp/coreruleset --strip-components=1
+
+FROM ${NGINX_IMAGE}
+
+ARG IMAGE_VERSION=dev
+ARG BUILD_DATE
+ARG VCS_REF
+
+LABEL org.opencontainers.image.title="Docker NGINX by Prowect" \
+      org.opencontainers.image.description="Production-hardened NGINX image with ModSecurity and OWASP CRS" \
+      org.opencontainers.image.authors="office@prowect.com" \
+      org.opencontainers.image.source="https://github.com/Prowect/Docker-NGINX" \
+      org.opencontainers.image.version="${IMAGE_VERSION}" \
+      org.opencontainers.image.created="${BUILD_DATE}" \
+      org.opencontainers.image.revision="${VCS_REF}"
+
+ENV NGINX_PORT=80 \
+    MODSECURITY_ENGINE=On \
+    MODSEC_AUDIT_LOG_PARTS=ABFHZ \
+    MODSEC_AUDIT_RETENTION_DAYS=30 \
+    MODSEC_AUDIT_MAX_SIZE_MB=0 \
+    MODSEC_AUDIT_MAX_SIZE_GB=1 \
+    MODSEC_AUDIT_CLEANUP_INTERVAL_SECONDS=86400 \
+    MODSEC_REQUEST_BODY_LIMIT=10485760 \
+    MODSEC_REQUEST_BODY_NO_FILES_LIMIT=1048576 \
+    CRS_BLOCKING_PARANOIA_LEVEL=1 \
+    CRS_DETECTION_PARANOIA_LEVEL=1 \
+    CRS_INBOUND_ANOMALY_THRESHOLD=5 \
+    CRS_OUTBOUND_ANOMALY_THRESHOLD=4 \
+    TRUSTED_PROXY_CIDRS= \
+    REAL_IP_HEADER=X-Forwarded-For \
+    REAL_IP_RECURSIVE=on \
+    RATE_LIMIT_ZONE_NAME=perip \
+    RATE_LIMIT_ZONE_SIZE=10m \
+    RATE_LIMIT_RATE=10r/s \
+    RATE_LIMIT_BURST=20 \
+    RATE_LIMIT_STATUS=429 \
+    CLIENT_MAX_BODY_SIZE=10m \
+    KEEPALIVE_TIMEOUT=65 \
+    CLIENT_BODY_TIMEOUT=60 \
+    CLIENT_HEADER_TIMEOUT=60 \
+    SEND_TIMEOUT=60 \
+    PROXY_CONNECT_TIMEOUT=5 \
+    PROXY_READ_TIMEOUT=60 \
+    PROXY_SEND_TIMEOUT=60
+
+RUN set -eux; \
+    apk add --no-cache \
+        ca-certificates \
+        geoip \
+        gettext-envsubst \
+        libmaxminddb-libs \
+        libstdc++ \
+        libxml2 \
+        lmdb \
+        pcre2 \
+        yajl \
+        zlib; \
+    rm -f /etc/nginx/conf.d/default.conf; \
+    mkdir -p \
+        /etc/nginx/modsec/custom \
+        /usr/local/modsecurity/lib \
+        /var/cache/nginx \
+        /var/log/modsecurity/audit/storage; \
+    chown -R nginx:nginx \
+        /var/cache/nginx \
+        /var/log/modsecurity
+
+COPY --from=builder /usr/local/modsecurity/lib/ /usr/local/modsecurity/lib/
+COPY --from=builder /tmp/ngx_http_modsecurity_module.so /usr/lib/nginx/modules/ngx_http_modsecurity_module.so
+COPY --from=builder /tmp/coreruleset/ /etc/nginx/modsec/coreruleset/
+COPY --from=builder /tmp/modsecurity.conf /etc/nginx/modsec/modsecurity.conf
+COPY --from=builder /tmp/unicode.mapping /etc/nginx/modsec/unicode.mapping
+
 COPY config/nginx/nginx.conf /etc/nginx/nginx.conf
-
-# Copy templates
 COPY config/nginx/templates/ /etc/nginx/templates/
+COPY config/modsecurity/ /etc/nginx/modsec/custom/
+COPY service/container-entrypoint.sh /usr/local/bin/container-entrypoint
+COPY service/render-runtime-config.sh /usr/local/bin/render-runtime-config
+COPY service/modsec-cleanup.sh /usr/local/bin/modsec-cleanup
+COPY www/ /usr/share/nginx/html/
 
-# Runit services for nginx
-COPY service/nginx.service /etc/service/nginx/run
-RUN chmod +x /etc/service/nginx/run
+RUN set -eux; \
+    rm -f /usr/local/modsecurity/lib/*.a /usr/local/modsecurity/lib/*.la; \
+    cp /etc/nginx/modsec/coreruleset/crs-setup.conf.example /etc/nginx/modsec/coreruleset/crs-setup.conf; \
+    sed -i 's|^[[:space:]]*SecUnicodeMapFile[[:space:]].*|SecUnicodeMapFile /etc/nginx/modsec/unicode.mapping 20127|' /etc/nginx/modsec/modsecurity.conf; \
+    sed -i 's/^SecRuleEngine.*/SecRuleEngine DetectionOnly/' /etc/nginx/modsec/modsecurity.conf; \
+    sed -i 's/^SecAuditEngine.*/SecAuditEngine RelevantOnly/' /etc/nginx/modsec/modsecurity.conf; \
+    sed -i 's/^SecAuditLogType.*/SecAuditLogType Concurrent/' /etc/nginx/modsec/modsecurity.conf; \
+    sed -i 's|^SecAuditLog .*|SecAuditLog /var/log/modsecurity/audit/audit.log|' /etc/nginx/modsec/modsecurity.conf; \
+    sed -i 's/^SecAuditLogParts.*/SecAuditLogParts ABFHZ/' /etc/nginx/modsec/modsecurity.conf; \
+    printf '\nSecAuditLogStorageDir /var/log/modsecurity/audit/storage\n' >> /etc/nginx/modsec/modsecurity.conf; \
+    printf '%s\n' \
+        'Include /etc/nginx/modsec/modsecurity.conf' \
+        'Include /tmp/modsecurity-runtime.conf' \
+        'Include /etc/nginx/modsec/coreruleset/crs-setup.conf' \
+        'Include /etc/nginx/modsec/custom/*-before.conf' \
+        'Include /etc/nginx/modsec/coreruleset/plugins/*-config.conf' \
+        'Include /etc/nginx/modsec/coreruleset/plugins/*-before.conf' \
+        'Include /etc/nginx/modsec/coreruleset/rules/*.conf' \
+        'Include /etc/nginx/modsec/coreruleset/plugins/*-after.conf' \
+        'Include /etc/nginx/modsec/custom/*-after.conf' \
+        > /etc/nginx/modsec/main.conf; \
+    chmod 0755 \
+        /usr/local/bin/container-entrypoint \
+        /usr/local/bin/render-runtime-config \
+        /usr/local/bin/modsec-cleanup; \
+    chmod 0750 /var/log/modsecurity/audit /var/log/modsecurity/audit/storage; \
+    chown -R nginx:nginx /var/log/modsecurity
 
-# Runit service for periodic ModSecurity audit cleanup
-COPY service/modsec-cleanup.service /etc/service/modsec-cleanup/run
-RUN chmod +x /etc/service/modsec-cleanup/run
+USER nginx
 
-COPY www/ /usr/share/nginx/html
+EXPOSE 80
 
-# Expose audit log directory as a volume for persistence
 VOLUME ["/var/log/modsecurity/audit"]
 
-# Start runit supervisor to manage nginx services
-CMD ["runsvdir", "-P", "/etc/service"]
+HEALTHCHECK --interval=30s --timeout=3s --start-period=10s --retries=3 \
+    CMD busybox nc -z -w 2 127.0.0.1 "${NGINX_PORT}" || exit 1
+
+STOPSIGNAL SIGTERM
+
+ENTRYPOINT ["/usr/local/bin/container-entrypoint"]
+CMD ["serve"]

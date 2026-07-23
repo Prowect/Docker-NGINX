@@ -1,6 +1,7 @@
 services:
     nginx:
         build: .
+        restart: unless-stopped
         # environment:
             # MODSECURITY_ENGINE: DetectionOnly
             # MODSEC_AUDIT_RETENTION_DAYS: 30
@@ -24,3 +25,22 @@ services:
         volumes:
             - ./data/logs/modsecurity/audit:/var/log/modsecurity/audit
             - ./data/cache:/var/cache/nginx
+        read_only: true
+        tmpfs:
+            - /tmp:rw,noexec,nosuid,nodev,size=64m,mode=1770,uid=101,gid=101
+        cap_drop:
+            - ALL
+        security_opt:
+            - no-new-privileges:true
+        sysctls:
+            net.ipv4.ip_unprivileged_port_start: 0
+        pids_limit: 100
+        mem_limit: 1g
+        cpus: 2.0
+        stop_grace_period: 30s
+        healthcheck:
+            test: ["CMD", "busybox", "nc", "-z", "-w", "2", "127.0.0.1", "80"]
+            interval: 30s
+            timeout: 3s
+            start_period: 10s
+            retries: 3

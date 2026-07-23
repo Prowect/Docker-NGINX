@@ -3,8 +3,8 @@
 limit_req_zone $binary_remote_addr zone=${RATE_LIMIT_ZONE_NAME}:${RATE_LIMIT_ZONE_SIZE} rate=${RATE_LIMIT_RATE};
 
 server {
-    listen       80;
-    listen  [::]:80;
+    listen       ${NGINX_PORT};
+    listen  [::]:${NGINX_PORT};
     server_name  localhost;
 
     # Timeouts and sizes (from ENV)
@@ -19,16 +19,19 @@ server {
     proxy_read_timeout    ${PROXY_READ_TIMEOUT};
     proxy_send_timeout    ${PROXY_SEND_TIMEOUT};
 
+    location = /healthz {
+        access_log off;
+        modsecurity off;
+        default_type text/plain;
+        return 200 "ok\n";
+    }
+
     #access_log  /var/log/nginx/host.access.log  main;
 
     location / {
         # enable ModSecurity for this location
         modsecurity on;
-        # set env `MODSECURITY_ENGINE` (On|DetectionOnly)
-        modsecurity_rules '
-            Include /etc/nginx/modsec/main.conf
-            SecRuleEngine ${MODSECURITY_ENGINE}
-        ';
+        modsecurity_rules_file /etc/nginx/modsec/main.conf;
 
         # per-IP rate limiting
         limit_req zone=${RATE_LIMIT_ZONE_NAME} burst=${RATE_LIMIT_BURST} nodelay;

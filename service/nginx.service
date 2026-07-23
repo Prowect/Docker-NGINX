@@ -1,3 +1,0 @@
-#!/bin/sh
-# runit service: use Docker's entrypoint to process templates, then run nginx
-exec /docker-entrypoint.sh nginx -g 'daemon off;'

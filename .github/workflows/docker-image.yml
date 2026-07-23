@@ -2,40 +2,132 @@ name: Docker Image CI
 
 on:
   push:
-    branches: [ "main" ]
-    tags: [ "v*" ]
+    branches: ["main"]
+    tags: ["v*"]
   pull_request:
-    branches: [ "main" ]
+    branches: ["main"]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ !startsWith(github.ref, 'refs/tags/') }}
+
+env:
+  IMAGE_NAME: prowect/nginx
 
 jobs:
+  test:
+    name: Build, test and scan
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
-  build:
-    runs-on: ubuntu-latest
-    steps:  
-      - name: Set up QEMU
-        uses: docker/setup-qemu-action@v2
-        
       - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@v2
-        
-      - name: Login to Docker Hub
-        uses: docker/login-action@v2
+        uses: docker/setup-buildx-action@bb05f3f5519dd87d3ba754cc423b652a5edd6d2c # v4.2.0
+
+      - name: Build test image
+        uses: docker/build-push-action@53b7df96c91f9c12dcc8a07bcb9ccacbed38856a # v7.3.0
+        with:
+          context: .
+          load: true
+          pull: true
+          push: false
+          tags: docker-nginx:test
+          build-args: |
+            IMAGE_VERSION=${{ github.ref_name }}
+            VCS_REF=${{ github.sha }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      - name: Run integration tests
+        run: ./run-tests.sh docker-nginx:test
+
+      - name: Scan image for known vulnerabilities
+        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
+        with:
+          image-ref: docker-nginx:test
+          format: table
+          exit-code: "1"
+          ignore-unfixed: true
+          vuln-type: os,library
+          severity: HIGH,CRITICAL
+
+  publish:
+    name: Publish signed multi-arch image
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: test
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Validate release tag
+        env:
+          VERSION_TAG: ${{ github.ref_name }}
+        run: |
+          if [[ ! "$VERSION_TAG" =~ ^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(-[0-9A-Za-z.-]+)?(\+[0-9A-Za-z.-]+)?$ ]]; then
+            echo "Release tag is not valid SemVer: $VERSION_TAG" >&2
+            exit 1
+          fi
+
+      - name: Set up QEMU
+        uses: docker/setup-qemu-action@96fe6ef7f33517b61c61be40b68a1882f3264fb8 # v4.2.0
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@bb05f3f5519dd87d3ba754cc423b652a5edd6d2c # v4.2.0
+
+      - name: Log in to Docker Hub
+        uses: docker/login-action@06fb636fac595d6fb4b28a5dfcb21a6f5091859c # v4.5.0
         with:
           username: ${{ secrets.DOCKERHUB_USERNAME }}
           password: ${{ secrets.DOCKERHUB_TOKEN }}
-          
-      - name: Generate tags
-        id: gen_tags
-        run: |
-          if [[ $GITHUB_REF == 'refs/tags/'* ]]; then
-            echo "tags=prowect/nginx:${GITHUB_REF/refs\/tags\//}" >> $GITHUB_ENV
-          else
-            echo "tags=prowect/nginx:latest" >> $GITHUB_ENV
-          fi
 
-      - name: Build and push
-        uses: docker/build-push-action@v4
+      - name: Generate image metadata
+        id: meta
+        uses: docker/metadata-action@dc802804100637a589fabce1cb79ff13a1411302 # v6.2.0
         with:
+          images: ${{ env.IMAGE_NAME }}
+          tags: |
+            type=raw,value=${{ github.ref_name }}
+            type=semver,pattern={{version}}
+            type=semver,pattern={{major}}.{{minor}},enable=${{ !contains(github.ref_name, '-') }}
+            type=semver,pattern={{major}},enable=${{ !contains(github.ref_name, '-') }}
+            type=raw,value=latest,enable=${{ !contains(github.ref_name, '-') }}
+
+      - name: Prepare build metadata
+        run: echo "BUILD_DATE=$(date -u +'%Y-%m-%dT%H:%M:%SZ')" >> "$GITHUB_ENV"
+
+      - name: Build and push multi-arch image
+        id: build
+        uses: docker/build-push-action@53b7df96c91f9c12dcc8a07bcb9ccacbed38856a # v7.3.0
+        with:
+          context: .
           platforms: linux/amd64,linux/arm64
+          pull: true
           push: true
-          tags: ${{ env.tags }}
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          build-args: |
+            IMAGE_VERSION=${{ github.ref_name }}
+            BUILD_DATE=${{ env.BUILD_DATE }}
+            VCS_REF=${{ github.sha }}
+          provenance: mode=max
+          sbom: true
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      - name: Install Cosign
+        uses: sigstore/cosign-installer@6f9f17788090df1f26f669e9d70d6ae9567deba6 # v4.1.2
+
+      - name: Sign image digest
+        env:
+          DIGEST: ${{ steps.build.outputs.digest }}
+        run: cosign sign --yes "${IMAGE_NAME}@${DIGEST}"

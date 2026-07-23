@@ -1,1 +1,7 @@
-/data
+.git
+.github
+data
+docker-compose.yml
+README.md
+run-tests.sh
+tests
