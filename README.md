@@ -4,12 +4,12 @@ Production-hardened, Alpine-based NGINX image with ModSecurity v3 and the OWASP 
 
 ## Included versions
 
-- NGINX 1.31.3
-- ModSecurity 3.0.16
+- NGINX 1.31.8 on Alpine 3.24 (slim)
+- ModSecurity 3.0.17
 - ModSecurity-nginx 1.0.4
-- OWASP CRS 4.28.0
+- OWASP CRS 4.30.0
 
-All source archives are verified with SHA-256 during the build. The NGINX base image is pinned to an immutable multi-architecture digest.
+All source archives are verified with SHA-256 during the build. The NGINX base image is pinned to an immutable multi-architecture digest. The module build checks that the downloaded NGINX source version matches the installed NGINX binary.
 
 ## Quick start
 
@@ -141,12 +141,24 @@ docker compose build --pull nginx
 ./run-tests.sh docker-nginx-nginx
 ```
 
+Before releasing an update, build and test both supported architectures:
+
+```bash
+for arch in amd64 arm64; do
+  docker buildx build --pull --platform "linux/$arch" --load -t "docker-nginx:test-$arch" .
+  DOCKER_DEFAULT_PLATFORM="linux/$arch" ./run-tests.sh "docker-nginx:test-$arch"
+done
+```
+
+Running the non-native architecture requires emulation (included with Docker Desktop).
+
 The integration test covers:
 
 - Non-root and image-size guardrails
 - Read-only runtime with all capabilities dropped
 - Healthcheck and normal HTTP traffic
-- CRS blocking of an XSS payload
+- CRS blocking of XSS and SQL-injection payloads
+- The same XSS payload passes in `DetectionOnly` and `Off` modes
 - NGINX and ModSecurity request-body limits
 - Per-client rate limiting with HTTP 429
 - Trusted proxy address handling
@@ -157,7 +169,7 @@ The integration test covers:
 
 ## Release supply chain
 
-Pull requests and `main` builds only build, test and scan. Only version tags publish images. Published multi-architecture images include SBOM and provenance attestations and are signed keylessly with Cosign.
+Pull requests and `main` builds only build, test and scan. Only version tags publish images. Published multi-architecture images include SBOM and provenance attestations and are signed keylessly with Cosign. CI explicitly pins Trivy 0.76.1 and Cosign 3.1.4; the vulnerability gate rejects fixable HIGH and CRITICAL findings.
 
 Verify a released digest:
 
@@ -168,4 +180,4 @@ cosign verify \
   prowect/nginx@sha256:<published-digest>
 ```
 
-Dependabot monitors the pinned base image and GitHub Actions. Updates to ModSecurity, its connector and CRS should retain explicit SHA-256 verification and pass the full integration suite before release.
+Dependabot monitors the pinned base image and GitHub Actions. Update the NGINX image digest, source version and source checksum together. Updates to ModSecurity, its connector and CRS should retain explicit SHA-256 verification and pass the full integration suite on both architectures before release. Review the pinned Trivy and Cosign versions as well as their installer Actions. Check application traffic in staging for new CRS false positives before production rollout.

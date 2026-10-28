@@ -4,11 +4,14 @@ set -eu
 IMAGE="${1:-docker-nginx-nginx}"
 CONTAINER="docker-nginx-test-$$"
 LEGACY_CONTAINER="${CONTAINER}-legacy"
+MODE_CONTAINER="${CONTAINER}-mode"
+XSS_QUERY='?q=%3Cscript%3Ealert(1)%3C%2Fscript%3E'
 SCRIPT_DIR=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
 
 cleanup() {
     docker rm -f "$CONTAINER" >/dev/null 2>&1 || true
     docker rm -f "$LEGACY_CONTAINER" >/dev/null 2>&1 || true
+    docker rm -f "$MODE_CONTAINER" >/dev/null 2>&1 || true
 }
 trap cleanup EXIT INT TERM
 
@@ -73,7 +76,10 @@ assert_equal 200 "$(curl -s -o /dev/null -w '%{http_code}' \
 assert_equal 200 "$(curl -s -o /dev/null -w '%{http_code}' "http://127.0.0.1:${host_port}/healthz")" 'health endpoint'
 assert_equal 403 "$(curl -s -o /dev/null -w '%{http_code}' \
     -H 'X-Forwarded-For: 198.51.100.2' \
-    "http://127.0.0.1:${host_port}/?q=%3Cscript%3Ealert(1)%3C%2Fscript%3E")" 'XSS request must be blocked'
+    "http://127.0.0.1:${host_port}/${XSS_QUERY}")" 'XSS request must be blocked'
+assert_equal 403 "$(curl -s -o /dev/null -w '%{http_code}' \
+    -H 'X-Forwarded-For: 198.51.100.6' \
+    "http://127.0.0.1:${host_port}/?id=1%27%20OR%20%271%27%3D%271%27--")" 'SQL injection request must be blocked'
 
 inspected_body=$(awk 'BEGIN { printf "value="; for (i = 0; i < 1500; i++) printf "a" }')
 assert_equal 400 "$(curl -s -o /dev/null -w '%{http_code}' \
@@ -156,5 +162,26 @@ wait_for_healthy "$LEGACY_CONTAINER"
 legacy_port=$(docker port "$LEGACY_CONTAINER" 80/tcp | sed -n '1s/.*://p')
 assert_equal 204 "$(curl -s -o /dev/null -w '%{http_code}' \
     -H 'Host: legacy.test' "http://127.0.0.1:${legacy_port}/legacy")" 'mounted legacy config on port 80'
+
+for engine in DetectionOnly Off; do
+    docker run -d \
+        --name "$MODE_CONTAINER" \
+        --read-only \
+        --cap-drop ALL \
+        --security-opt no-new-privileges:true \
+        --sysctl net.ipv4.ip_unprivileged_port_start=0 \
+        --tmpfs /tmp:rw,noexec,nosuid,nodev,uid=101,gid=101,mode=1770 \
+        --tmpfs /var/cache/nginx:rw,noexec,nosuid,nodev,uid=101,gid=101,mode=0750 \
+        --tmpfs /var/log/modsecurity/audit:rw,noexec,nosuid,nodev,uid=101,gid=101,mode=0750 \
+        -e "MODSECURITY_ENGINE=$engine" \
+        -p 127.0.0.1::80 \
+        "$IMAGE" >/dev/null
+
+    wait_for_healthy "$MODE_CONTAINER"
+    mode_port=$(docker port "$MODE_CONTAINER" 80/tcp | sed -n '1s/.*://p')
+    assert_equal 200 "$(curl -s -o /dev/null -w '%{http_code}' \
+        "http://127.0.0.1:${mode_port}/${XSS_QUERY}")" "XSS request must pass with MODSECURITY_ENGINE=$engine"
+    docker rm -f "$MODE_CONTAINER" >/dev/null
+done
 
 printf 'PASS: image=%s size=%s bytes\n' "$IMAGE" "$image_size"

@@ -1,17 +1,17 @@
 # syntax=docker/dockerfile:1.7
 
-ARG NGINX_IMAGE=nginx:1.31.3-alpine-slim@sha256:45b82ed5f285b90d63df07ba70430fdd8f25624b416617d9e6dc93412b2006dc
+ARG NGINX_IMAGE=nginx:1.31.8-alpine3.24-slim@sha256:f45171d36c76a8b2f5ef97108a3a8a2294248a6578a0a180edc2d78f7d2edc26
 
 FROM ${NGINX_IMAGE} AS builder
 
-ARG NGINX_VERSION=1.31.3
-ARG NGINX_SHA256=a7657c50811c2d92d9895395e8b873ef60398142c4db21eb647811c38f6dd525
-ARG MODSECURITY_VERSION=v3.0.16
-ARG MODSECURITY_SHA256=739be3c71b1939f14e91afe1eeae654acbd440da11bd29790458840bc315b4c0
+ARG NGINX_VERSION=1.31.8
+ARG NGINX_SHA256=0652b760b3b772d2ec17b47c2fc15d9a95e6fe35cd5b877eadc1a62d9bc75af1
+ARG MODSECURITY_VERSION=v3.0.17
+ARG MODSECURITY_SHA256=f283b33d5c21130fd3a15c84a93a1abe12bd1949edaf44288b12af571b671a50
 ARG MODSECURITY_NGINX_VERSION=v1.0.4
 ARG MODSECURITY_NGINX_SHA256=6bdc7570911be884c1e43aaf85046137f9fde0cfa0dd4a55b853c81c45a13313
-ARG OWASP_CRS_VERSION=v4.28.0
-ARG OWASP_CRS_SHA256=fca67fe46adafeeee61b9d1a03f38c25b9b2a799577df03fa51d99589e6d03b9
+ARG OWASP_CRS_VERSION=v4.30.0
+ARG OWASP_CRS_SHA256=3d678a41fd5aade34760127fef5dd64fd7a77848913fc0f70dde0cf467c94427
 
 RUN set -eux; \
     apk add --no-cache \
@@ -55,6 +55,12 @@ RUN set -eux; \
     mkdir nginx; \
     tar -xzf nginx.tar.gz -C nginx --strip-components=1; \
     cd nginx; \
+    source_version=$(awk '$2 == "NGINX_VERSION" { gsub(/"/, "", $3); print $3 }' src/core/nginx.h); \
+    binary_version=$(nginx -v 2>&1); \
+    if [ "$binary_version" != "nginx version: nginx/${source_version}" ]; then \
+        printf 'NGINX version mismatch: source=%s binary=%s\n' "$source_version" "$binary_version" >&2; \
+        exit 1; \
+    fi; \
     ./configure --with-compat --add-dynamic-module=/tmp/build/modsecurity-nginx; \
     make modules -j"$(getconf _NPROCESSORS_ONLN)"; \
     install -D -m 0755 objs/ngx_http_modsecurity_module.so /tmp/ngx_http_modsecurity_module.so
