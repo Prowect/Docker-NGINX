@@ -4,7 +4,7 @@ Production-hardened, Alpine-based NGINX image with ModSecurity v3 and the OWASP 
 
 ## Included versions
 
-- NGINX 1.31.8 on Alpine 3.24 (slim)
+- NGINX 1.31.9 on Alpine 3.24 (slim)
 - ModSecurity 3.0.17
 - ModSecurity-nginx 1.0.4
 - OWASP CRS 4.30.0

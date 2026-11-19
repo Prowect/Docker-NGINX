@@ -3,12 +3,14 @@ set -eu
 
 IMAGE="${1:-docker-nginx-nginx}"
 CONTAINER="docker-nginx-test-$$"
+DEFAULT_CONTAINER="${CONTAINER}-default"
 LEGACY_CONTAINER="${CONTAINER}-legacy"
 MODE_CONTAINER="${CONTAINER}-mode"
 XSS_QUERY='?q=%3Cscript%3Ealert(1)%3C%2Fscript%3E'
 SCRIPT_DIR=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
 
 cleanup() {
+    docker rm -f "$DEFAULT_CONTAINER" >/dev/null 2>&1 || true
     docker rm -f "$CONTAINER" >/dev/null 2>&1 || true
     docker rm -f "$LEGACY_CONTAINER" >/dev/null 2>&1 || true
     docker rm -f "$MODE_CONTAINER" >/dev/null 2>&1 || true
@@ -41,6 +43,8 @@ wait_for_healthy() {
 
 image_user=$(docker image inspect "$IMAGE" --format '{{.Config.User}}')
 assert_equal nginx "$image_user" 'image must run as nginx'
+assert_equal 'nginx version: nginx/1.31.9' \
+    "$(docker run --rm --entrypoint nginx "$IMAGE" -v 2>&1)" 'patched NGINX version'
 
 image_size=$(docker image inspect "$IMAGE" --format '{{.Size}}')
 if [ "$image_size" -gt 200000000 ]; then
@@ -49,6 +53,15 @@ if [ "$image_size" -gt 200000000 ]; then
 fi
 
 docker run --rm "$IMAGE" nginx -t >/dev/null
+
+docker run -d --name "$DEFAULT_CONTAINER" -p 127.0.0.1::80 "$IMAGE" >/dev/null
+wait_for_healthy "$DEFAULT_CONTAINER"
+default_port=$(docker port "$DEFAULT_CONTAINER" 80/tcp | sed -n '1s/.*://p')
+assert_equal 200 "$(curl -s -o /dev/null -w '%{http_code}' \
+    "http://127.0.0.1:${default_port}/")" 'default startup without extra mounts'
+assert_equal 200 "$(curl -s -o /dev/null -w '%{http_code}' \
+    "http://127.0.0.1:${default_port}/healthz")" 'default startup health endpoint'
+docker rm -f "$DEFAULT_CONTAINER" >/dev/null
 
 docker run -d \
     --name "$CONTAINER" \
